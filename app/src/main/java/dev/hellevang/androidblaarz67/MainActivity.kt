@@ -34,15 +34,26 @@ import dev.hellevang.androidblaarz67.ui.theme.AndroidBlaaRZ67Theme
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import java.nio.charset.Charset
 import java.util.*
+import kotlin.concurrent.schedule
 
 class MainActivity : ComponentActivity() {
     lateinit var bluetoothManager: BluetoothManager
     lateinit var bluetoothAdapter: BluetoothAdapter
     lateinit var takePermission: ActivityResultLauncher<String>
     lateinit var takeResultLauncher: ActivityResultLauncher<Intent>
+    lateinit var mConnectThread: ConnectThread
     lateinit var mConnectedThread: ConnectedThread
+    var mBluetoothSocket: BluetoothSocket? = null
+    var bluetoothDevice by mutableStateOf<BluetoothDevice?>(null)
+
+    companion object {
+        var connectionState by mutableStateOf("Not connected")
+        var mState = 0 // Do i need this?
+        const val STATE_NONE = 0 // we're doing nothing
+        const val STATE_CONNECTING = 2 // now initiating an outgoing connection
+        const val STATE_CONNECTED = 3 // now connected to a remote device
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -73,6 +84,8 @@ class MainActivity : ComponentActivity() {
                 Toast.makeText(applicationContext, "Bluetooth Off", Toast.LENGTH_LONG).show()
             }
         }
+        enableBluetooth();
+        connect()
 
         setContent {
             AndroidBlaaRZ67Theme {
@@ -85,6 +98,26 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    private fun connect() {
+        // TODO: Set up error handling in case there isn't a paired device
+        bluetoothDevice = findPairedDevices("RZ67 Blaa")
+        mConnectThread = ConnectThread(bluetoothDevice!!)
+        mConnectThread.start()
+    }
+
+    private fun connected(mmSocket: BluetoothSocket) {
+        // Start the thread to manage the connection and perform transmissions
+        mConnectedThread = ConnectedThread(mmSocket)
+        mConnectedThread.start()
+    }
+
+    private fun connectionLost() {
+        connectionState = "Connection Lost"
+        mState = STATE_NONE
+        mConnectedThread.cancel()
+        connect()
     }
 
     @SuppressLint("MissingPermission")
@@ -104,25 +137,26 @@ class MainActivity : ComponentActivity() {
                 contentScale = ContentScale.Crop
             )
         }
-        enableBlueTooth();
-        val bluetoothDevice: BluetoothDevice? = findPairedDevices("RZ67 Blaa")
 
         Column {
             HeaderText()
             Spacer(modifier = Modifier.padding(top = 25.dp))
 
             // Debug
-            Column {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
                 if (bluetoothDevice != null) {
                     Button(onClick = {
-                        val connectThread = ConnectThread(bluetoothDevice)
-                        connectThread.run()
-
+                        connect()
                     }) {
-                        Text("Connect to ${bluetoothDevice.name}", color = Color.Red)
+                        Text("Connect to ${bluetoothDevice!!.name}", color = Color.Red)
                     }
                     Text("Paired devices: ${bluetoothDevice?.name}", color = Color.LightGray)
                 }
+                Text("$connectionState", color = Color.LightGray)
             }
 
             Column(
@@ -157,7 +191,7 @@ class MainActivity : ComponentActivity() {
         return null
     }
 
-    private fun enableBlueTooth() {
+    private fun enableBluetooth() {
         takePermission.launch(Manifest.permission.BLUETOOTH_CONNECT) // Setup bluetooth
     }
 
@@ -194,7 +228,8 @@ class MainActivity : ComponentActivity() {
                     TriggerType.Direct -> 11
                     TriggerType.Countdown -> 20
                 }
-                mConnectedThread.write(byteArrayOf(action.toByte())) },
+                mConnectedThread.write(byteArrayOf(action.toByte()))
+            },
             modifier = Modifier
                 .padding(top = 150.dp),
             enabled = this::mConnectedThread.isInitialized
@@ -241,7 +276,7 @@ class MainActivity : ComponentActivity() {
     }
 
     @SuppressLint("MissingPermission")
-    private inner class ConnectThread(device: BluetoothDevice) : Thread() {
+    inner class ConnectThread(device: BluetoothDevice) : Thread() {
 
         /**
          * Warning! THIS UUID IS NOT RANDOM!
@@ -259,6 +294,10 @@ class MainActivity : ComponentActivity() {
         }
 
         override fun run() {
+
+            mState = STATE_CONNECTING
+            connectionState = "Initializing connection to ${bluetoothDevice?.name}..."
+
             // Cancel discovery because it otherwise slows down the connection.
             bluetoothAdapter.cancelDiscovery()
 
@@ -269,13 +308,8 @@ class MainActivity : ComponentActivity() {
                     socket.connect()
                     connected(mmSocket!!)
                 } catch (e: IOException) {
-                    Toast.makeText(applicationContext, e.message, Toast.LENGTH_SHORT).show()
+
                 }
-                Toast.makeText(
-                    applicationContext,
-                    "Socket is connected: " + socket.isConnected,
-                    Toast.LENGTH_SHORT
-                ).show()
 
             }
         }
@@ -283,21 +317,16 @@ class MainActivity : ComponentActivity() {
         // Closes the client socket and causes the thread to finish.
         fun cancel() {
             try {
-                Toast.makeText(applicationContext, "foo", Toast.LENGTH_SHORT).show()
                 mmSocket?.close()
             } catch (e: IOException) {
 
             }
         }
 
-        private fun connected(mmSocket: BluetoothSocket) {
-            // Start the thread to manage the connection and perform transmissions
-            mConnectedThread = ConnectedThread(mmSocket)
-            mConnectedThread.start()
-        }
     }
 
-    class ConnectedThread(socket: BluetoothSocket) : Thread() {
+    @SuppressLint("MissingPermission")
+    inner class ConnectedThread(socket: BluetoothSocket) : Thread() {
         private val mmSocket: BluetoothSocket
         private val mmInStream: InputStream?
         private val mmOutStream: OutputStream?
@@ -314,6 +343,8 @@ class MainActivity : ComponentActivity() {
             }
             mmInStream = tmpIn
             mmOutStream = tmpOut
+            mState = STATE_CONNECTED
+            connectionState = "Connected to ${bluetoothDevice?.name}"
         }
 
         override fun run() {
@@ -321,13 +352,16 @@ class MainActivity : ComponentActivity() {
             var bytes: Int? // bytes returned from read()
 
             // Keep listening to the InputStream until an exception occurs
-            while (true) {
-                // Read from the InputStream
+
+            // Keep listening to the InputStream while connected
+            while (mState == STATE_CONNECTED) {
                 try {
-                    bytes = mmInStream?.read(buffer)
-                    val incomingMessage = bytes?.let { String(buffer, 0, it) }
+                    // Read from the InputStream
+                    bytes = mmInStream!!.read(buffer)
                     // TODO
+
                 } catch (e: IOException) {
+                    connectionLost()
                     break
                 }
             }
