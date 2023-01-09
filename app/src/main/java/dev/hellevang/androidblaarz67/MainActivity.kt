@@ -9,6 +9,7 @@ import android.bluetooth.BluetoothSocket
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -16,10 +17,9 @@ import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
-import androidx.compose.material.Button
-import androidx.compose.material.MaterialTheme
-import androidx.compose.material.Surface
-import androidx.compose.material.Text
+import androidx.compose.material.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Camera
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -31,11 +31,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import dev.hellevang.androidblaarz67.ui.theme.AndroidBlaaRZ67Theme
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.*
-import kotlin.concurrent.schedule
 
 class MainActivity : ComponentActivity() {
     lateinit var bluetoothManager: BluetoothManager
@@ -44,12 +45,11 @@ class MainActivity : ComponentActivity() {
     lateinit var takeResultLauncher: ActivityResultLauncher<Intent>
     lateinit var mConnectThread: ConnectThread
     lateinit var mConnectedThread: ConnectedThread
-    var mBluetoothSocket: BluetoothSocket? = null
     var bluetoothDevice by mutableStateOf<BluetoothDevice?>(null)
 
     companion object {
         var connectionState by mutableStateOf("Not connected")
-        var mState = 0 // Do i need this?
+        var mState = mutableStateOf(0) //
         const val STATE_NONE = 0 // we're doing nothing
         const val STATE_CONNECTING = 2 // now initiating an outgoing connection
         const val STATE_CONNECTED = 3 // now connected to a remote device
@@ -84,7 +84,7 @@ class MainActivity : ComponentActivity() {
                 Toast.makeText(applicationContext, "Bluetooth Off", Toast.LENGTH_LONG).show()
             }
         }
-        enableBluetooth();
+        enableBluetooth()
         connect()
 
         setContent {
@@ -101,11 +101,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun connect() {
-        // TODO: Set up error handling in case there isn't a paired device
-        bluetoothDevice = findPairedDevices("RZ67 Blaa")
-        mConnectThread = ConnectThread(bluetoothDevice!!)
+        if (this::mConnectThread.isInitialized) {
+            mConnectThread.cancel()
+        }
+        mConnectThread = ConnectThread()
         mConnectThread.start()
     }
+
 
     private fun connected(mmSocket: BluetoothSocket) {
         // Start the thread to manage the connection and perform transmissions
@@ -115,7 +117,7 @@ class MainActivity : ComponentActivity() {
 
     private fun connectionLost() {
         connectionState = "Connection Lost"
-        mState = STATE_NONE
+        mState = mutableStateOf(STATE_NONE)
         mConnectedThread.cancel()
         connect()
     }
@@ -134,7 +136,7 @@ class MainActivity : ComponentActivity() {
                 modifier = Modifier
                     .fillMaxSize()
                     .fillMaxHeight(),
-                contentScale = ContentScale.Crop
+                contentScale = ContentScale.Fit
             )
         }
 
@@ -144,19 +146,13 @@ class MainActivity : ComponentActivity() {
 
             // Debug
             Column(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 25.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                if (bluetoothDevice != null) {
-                    Button(onClick = {
-                        connect()
-                    }) {
-                        Text("Connect to ${bluetoothDevice!!.name}", color = Color.Red)
-                    }
-                    Text("Paired devices: ${bluetoothDevice?.name}", color = Color.LightGray)
-                }
-                Text("$connectionState", color = Color.LightGray)
+                Text(connectionState, color = Color.White)
             }
 
             Column(
@@ -179,12 +175,9 @@ class MainActivity : ComponentActivity() {
                 Manifest.permission.BLUETOOTH_CONNECT
             ) == PackageManager.PERMISSION_GRANTED
         ) {
-            var pairedDevices = bluetoothAdapter.bondedDevices
+            val pairedDevices = bluetoothAdapter.bondedDevices
             val find = pairedDevices.find { it.name == name }
-            if (find == null) {
-                Toast.makeText(applicationContext, "No Bluetooth Device Found", Toast.LENGTH_SHORT)
-                    .show()
-            } else {
+            if (find != null) {
                 return find
             }
         }
@@ -203,39 +196,92 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun TriggerButtonPanel() {
         var triggerType by remember { mutableStateOf(TriggerType.Direct) }
+        var showCountDownTimer by remember { mutableStateOf(false) }
+
+        fun triggerCountdownShutter() {
+            triggerShutter()
+            showCountDownTimer = false
+        }
+
         Row(
             modifier = Modifier.padding(top = 100.dp)
         ) {
-            ToggleButton(toggleButton = { triggerType = TriggerType.Direct }, text = "Direct shot")
-            ToggleButton(
-                toggleButton = { triggerType = TriggerType.Countdown },
-                modifier = Modifier.padding(start = 25.dp),
-                text = "Countdown"
-            )
+            when (triggerType) {
+                // If current trigger type is countdown, show direct button
+                TriggerType.Countdown -> {
+                    ToggleButton(toggleButton = {
+                        triggerType = TriggerType.Direct
+                    }, text = "Mode")
+                }
+                else -> {
+                // If current trigger type is direct, show countdown button
+                    ToggleButton(toggleButton = {
+                        triggerType = TriggerType.Countdown
+                    }, text = "Mode")
+                }
+            }
         }
         Text(
             fontSize = 24.sp,
-            color = Color.LightGray,
+            color = Color.White,
             modifier = Modifier
                 .fillMaxWidth()
                 .wrapContentWidth(Alignment.CenterHorizontally)
                 .padding(start = 16.dp, end = 16.dp),
-            text = "Mode: ${triggerType.name}"
+            text = triggerType.name
         )
-        Button(
-            onClick = {
-                val action = when (triggerType) {
-                    TriggerType.Direct -> 11
-                    TriggerType.Countdown -> 20
+        Spacer(modifier = Modifier.padding(top = 15.dp))
+        when (triggerType) {
+            TriggerType.Direct -> {
+                Text(
+                    fontSize = 18.sp,
+                    color = Color.White,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .wrapContentWidth(Alignment.CenterHorizontally)
+                        .padding(start = 16.dp, end = 16.dp),
+                    text = "Press the button to take a picture"
+                )
+            }
+            TriggerType.Countdown -> {
+                if (showCountDownTimer) {
+                    StartTimer(::triggerCountdownShutter)
+                } else {
+                    Text(
+                        fontSize = 18.sp,
+                        color = Color.White,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .wrapContentWidth(Alignment.CenterHorizontally)
+                            .padding(start = 16.dp, end = 16.dp),
+                        text = "Press to start countdown"
+                    )
                 }
-                mConnectedThread.write(byteArrayOf(action.toByte()))
+            }
+        }
+
+        Button(
+            onClick =
+            {
+                if (triggerType == TriggerType.Direct) {
+                    triggerShutter()
+                } else {
+                    showCountDownTimer = !showCountDownTimer
+                }
             },
             modifier = Modifier
-                .padding(top = 150.dp),
-            enabled = this::mConnectedThread.isInitialized
-        ) {
-            Text(text = "Trigger shutter")
+                .padding(top = 50.dp),
+            enabled = this::mConnectedThread.isInitialized,
+        )
+        {
+            Text(text = "Trigger shutter", modifier = Modifier.padding(end = 10.dp))
+            Icon(
+                imageVector = Icons.Default.Camera,
+                contentDescription = null,
+                tint = Color.White
+            )
         }
+
     }
 
     enum class TriggerType {
@@ -243,13 +289,49 @@ class MainActivity : ComponentActivity() {
         Countdown
     }
 
+    @Composable
+    fun StartTimer(done: () -> Unit) {
+        val timeLeftMs by rememberCountdownTimerState(10_000)
+        Text(
+            fontSize = 18.sp,
+            color = Color.White,
+            modifier = Modifier
+                .fillMaxWidth()
+                .wrapContentWidth(Alignment.CenterHorizontally)
+                .padding(start = 16.dp, end = 16.dp),
+            text = "$timeLeftMs ms left")
+        when (timeLeftMs) {
+            0L -> {
+                Toast.makeText(applicationContext, "Take picture", Toast.LENGTH_SHORT).show()
+                done()
+            }
+        }
+    }
+
+    @Composable
+    fun rememberCountdownTimerState(
+        initialMillis: Long,
+        step: Long = 50
+    ): MutableState<Long> {
+        val timeLeft = remember { mutableStateOf(initialMillis) }
+        LaunchedEffect(initialMillis, step) {
+            val startTime = SystemClock.uptimeMillis()
+            while (isActive && timeLeft.value > 0) {
+                // how much time actually passed
+                val duration = (SystemClock.uptimeMillis() - startTime).coerceAtLeast(0)
+                timeLeft.value = (initialMillis - duration).coerceAtLeast(0)
+                delay(step.coerceAtMost(timeLeft.value))
+            }
+        }
+        return timeLeft
+    }
 
     @Composable
     fun HeaderText() {
         Text(
-            text = "Android Blaa RZ67",
+            text = "Blåtann RZ67",
             fontSize = 36.sp,
-            color = Color.LightGray,
+            color = Color.White,
             modifier = Modifier
                 .fillMaxWidth()
                 .wrapContentWidth(Alignment.CenterHorizontally)
@@ -258,7 +340,7 @@ class MainActivity : ComponentActivity() {
         Text(
             text = "A Mamiya RZ67 bluetooth trigger",
             fontSize = 24.sp,
-            color = Color.LightGray,
+            color = Color.White,
             modifier = Modifier
                 .fillMaxWidth()
                 .wrapContentWidth(Alignment.CenterHorizontally)
@@ -275,8 +357,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun triggerShutter() {
+        mConnectedThread.write(byteArrayOf(10.toByte()))
+    }
+
     @SuppressLint("MissingPermission")
-    inner class ConnectThread(device: BluetoothDevice) : Thread() {
+    inner class ConnectThread : Thread() {
+        private lateinit var mmSocket: BluetoothSocket
 
         /**
          * Warning! THIS UUID IS NOT RANDOM!
@@ -288,36 +375,48 @@ class MainActivity : ComponentActivity() {
          *  This is a lie. Do not change.
          */
         val uuid: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
-
-        private val mmSocket: BluetoothSocket? by lazy(LazyThreadSafetyMode.NONE) {
-            device.createInsecureRfcommSocketToServiceRecord(uuid)
-        }
-
         override fun run() {
 
-            mState = STATE_CONNECTING
-            connectionState = "Initializing connection to ${bluetoothDevice?.name}..."
+            mState = mutableStateOf(STATE_CONNECTING)
 
-            // Cancel discovery because it otherwise slows down the connection.
-            bluetoothAdapter.cancelDiscovery()
+            connectionState = "Looking for RZ67..."
+            var count = 0
 
-            mmSocket?.let { socket ->
+            while (mState.value != STATE_CONNECTED) {
+                count++
                 // Connect to the remote device through the socket. This call blocks
                 // until it succeeds or throws an exception.
                 try {
-                    socket.connect()
-                    connected(mmSocket!!)
-                } catch (e: IOException) {
+                    // Connect to the remote device through the socket. This call blocks
+                    // until it succeeds or throws an exception.
+                    bluetoothDevice = findPairedDevices("RZ67 Blaa").also {
+                        bluetoothAdapter.cancelDiscovery()
+                    }
 
+                    bluetoothDevice?.createRfcommSocketToServiceRecord(uuid)?.let {
+                        mmSocket = it
+                        mmSocket.connect()
+                        connected(mmSocket)
+                    }
+                } catch (connectException: IOException) {
+                    // Unable to connect; close the socket and return.
+                    try {
+                        mmSocket.close()
+                    } catch (closeException: IOException) {
+
+                    }
                 }
-
+                if (count > 10) {
+                    connectionState = "Can't connect. Is the trigger paired to the phone?"
+                }
+                sleep(100)
             }
         }
 
         // Closes the client socket and causes the thread to finish.
         fun cancel() {
             try {
-                mmSocket?.close()
+                mmSocket.close()
             } catch (e: IOException) {
 
             }
@@ -343,7 +442,7 @@ class MainActivity : ComponentActivity() {
             }
             mmInStream = tmpIn
             mmOutStream = tmpOut
-            mState = STATE_CONNECTED
+            mState = mutableStateOf(STATE_CONNECTED)
             connectionState = "Connected to ${bluetoothDevice?.name}"
         }
 
@@ -351,10 +450,8 @@ class MainActivity : ComponentActivity() {
             val buffer = ByteArray(1024) // buffer store for the stream
             var bytes: Int? // bytes returned from read()
 
-            // Keep listening to the InputStream until an exception occurs
-
             // Keep listening to the InputStream while connected
-            while (mState == STATE_CONNECTED) {
+            while (mState.value == STATE_CONNECTED) {
                 try {
                     // Read from the InputStream
                     bytes = mmInStream!!.read(buffer)
