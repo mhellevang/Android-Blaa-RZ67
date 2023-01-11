@@ -168,7 +168,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun findPairedDevices(name: String): BluetoothDevice? {
+    private fun findDevice(name: String = "RZ67 Blaa"): BluetoothDevice? {
         // Find all paired devices
         if (ActivityCompat.checkSelfPermission(
                 applicationContext,
@@ -197,9 +197,8 @@ class MainActivity : ComponentActivity() {
     fun TriggerButtonPanel() {
         var triggerType by remember { mutableStateOf(TriggerType.Direct) }
         var showCountDownTimer by remember { mutableStateOf(false) }
-
-        fun triggerCountdownShutter() {
-            triggerShutter()
+        fun delayedTrigger() {
+            sendSignal(SignalType.Trigger, false)
             showCountDownTimer = false
         }
 
@@ -245,7 +244,8 @@ class MainActivity : ComponentActivity() {
             }
             TriggerType.Countdown -> {
                 if (showCountDownTimer) {
-                    StartTimer(::triggerCountdownShutter)
+                    sendSignal(SignalType.Blink)
+                    StartTimer(::delayedTrigger)
                 } else {
                     Text(
                         fontSize = 18.sp,
@@ -254,7 +254,7 @@ class MainActivity : ComponentActivity() {
                             .fillMaxWidth()
                             .wrapContentWidth(Alignment.CenterHorizontally)
                             .padding(start = 16.dp, end = 16.dp),
-                        text = "Press to start countdown"
+                        text = "Press to start 10s countdown"
                     )
                 }
             }
@@ -264,9 +264,15 @@ class MainActivity : ComponentActivity() {
             onClick =
             {
                 if (triggerType == TriggerType.Direct) {
-                    triggerShutter()
+                    sendSignal(SignalType.Trigger)
                 } else {
-                    showCountDownTimer = !showCountDownTimer
+                    showCountDownTimer = if (showCountDownTimer) {
+                        // Cancel timer
+                        sendSignal(SignalType.Blink, false)
+                        false
+                    } else {
+                        true
+                    }
                 }
             },
             modifier = Modifier
@@ -357,8 +363,29 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun triggerShutter() {
-        mConnectedThread.write(byteArrayOf(10.toByte()))
+    enum class SignalType {
+        Trigger,
+        Blink
+    }
+
+    private fun sendSignal(signalType: SignalType = SignalType.Trigger, on: Boolean = true) {
+        when (signalType) {
+            SignalType.Trigger -> {
+                if (on) {
+                    mConnectedThread.write(byteArrayOf(11.toByte()))
+                }
+                else {
+                    mConnectedThread.write(byteArrayOf(10.toByte()))
+                }
+            }
+            SignalType.Blink -> {
+                if (on) {
+                    mConnectedThread.write(byteArrayOf(21.toByte()))
+                } else {
+                    mConnectedThread.write(byteArrayOf(20.toByte()))
+                }
+            }
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -389,7 +416,7 @@ class MainActivity : ComponentActivity() {
                 try {
                     // Connect to the remote device through the socket. This call blocks
                     // until it succeeds or throws an exception.
-                    bluetoothDevice = findPairedDevices("RZ67 Blaa").also {
+                    bluetoothDevice = findDevice().also {
                         bluetoothAdapter.cancelDiscovery()
                     }
 
@@ -406,7 +433,7 @@ class MainActivity : ComponentActivity() {
 
                     }
                 }
-                if (count > 10) {
+                if (count > 10 && mState.value != STATE_CONNECTED) {
                     connectionState = "Can't connect. Is the trigger paired to the phone?"
                 }
                 sleep(100)
