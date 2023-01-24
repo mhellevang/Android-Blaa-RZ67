@@ -3,17 +3,14 @@ package dev.hellevang.androidblaarz67
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
-import android.bluetooth.BluetoothSocket
+import android.bluetooth.le.*
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.os.Bundle
-import android.os.SystemClock
+import android.os.*
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
@@ -30,28 +27,30 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
+import com.juul.kable.*
+import com.juul.kable.State
 import dev.hellevang.androidblaarz67.ui.theme.AndroidBlaaRZ67Theme
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import java.io.IOException
-import java.io.InputStream
-import java.io.OutputStream
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
 import java.util.*
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.pow
+
 
 class MainActivity : ComponentActivity() {
-    lateinit var bluetoothManager: BluetoothManager
-    lateinit var bluetoothAdapter: BluetoothAdapter
-    lateinit var takePermission: ActivityResultLauncher<String>
-    lateinit var takeResultLauncher: ActivityResultLauncher<Intent>
-    lateinit var mConnectThread: ConnectThread
-    lateinit var mConnectedThread: ConnectedThread
-    var bluetoothDevice by mutableStateOf<BluetoothDevice?>(null)
+    private val scope = MainScope()
+    lateinit var bluetoothLeScanner: BluetoothLeScanner
+    lateinit var peripheral: Peripheral
+    private val connectionAttempt = AtomicInteger()
 
     companion object {
+        // UUID of RZ67 Blaa services
+        val targetServiceUUID: UUID = UUID.fromString("c9239c9e-6fc9-4168-b3aa-53105eb990b0")
+        // UUID of RZ67 Blaa characteristic
+        val targetCharacteristicUUID: UUID = UUID.fromString("458d4dc9-349f-401d-b092-a2b1c55f5319")
         var connectionState by mutableStateOf("Not connected")
         var mState = mutableStateOf(0) //
         const val STATE_NONE = 0 // we're doing nothing
-        const val STATE_CONNECTING = 2 // now initiating an outgoing connection
         const val STATE_CONNECTED = 3 // now connected to a remote device
     }
 
@@ -60,21 +59,9 @@ class MainActivity : ComponentActivity() {
 
         checkPermissions()
 
-        bluetoothManager = getSystemService(BLUETOOTH_SERVICE) as BluetoothManager
-        bluetoothAdapter = bluetoothManager.adapter
-        takePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
-            if (it) {
-                val intent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-                takeResultLauncher.launch(intent)
-            } else {
-                Toast.makeText(
-                    applicationContext,
-                    "Bluetooth Permission is not Granted",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-        }
-        takeResultLauncher = registerForActivityResult(
+        val bluetoothManager = getSystemService(BLUETOOTH_SERVICE) as BluetoothManager
+        val bluetoothAdapter = bluetoothManager.adapter
+        val takeResultLauncher = registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
         ) { result ->
             if (result.resultCode == RESULT_OK) {
@@ -84,8 +71,47 @@ class MainActivity : ComponentActivity() {
                 Toast.makeText(applicationContext, "Bluetooth Off", Toast.LENGTH_LONG).show()
             }
         }
-        enableBluetooth()
-        connect()
+        val takePermission =
+            registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+                if (it) {
+                    val intent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                    takeResultLauncher.launch(intent)
+                } else {
+                    Toast.makeText(
+                        applicationContext,
+                        "Bluetooth Permission is not Granted",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+
+        takePermission.launch(Manifest.permission.BLUETOOTH_CONNECT)
+        bluetoothLeScanner = bluetoothAdapter.bluetoothLeScanner
+
+        scope.launch {
+            val advertisement = Scanner {
+                filters = listOf(Filter.Service(targetServiceUUID))
+            }.advertisements.first()
+
+            awaitAll(
+                async {
+                    peripheral = scope.peripheral(advertisement)
+                }
+            )
+            scope.enableAutoReconnect()
+            scope.connect()
+            scope.launch {
+                peripheral.state.collect { state ->
+                    connectionState = state.toString()
+                    if (state is State.Connected) {
+                        mState.value = STATE_CONNECTED
+                    } else {
+                        mState.value = STATE_NONE
+                    }
+                    println("Connection State $connectionState")
+                }
+            }
+        }
 
         setContent {
             AndroidBlaaRZ67Theme {
@@ -100,26 +126,34 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun connect() {
-        if (this::mConnectThread.isInitialized) {
-            mConnectThread.cancel()
+    private fun CoroutineScope.enableAutoReconnect() {
+        peripheral.state
+            .filter { it is State.Disconnected }
+            .onEach {
+                val timeMillis =
+                    backoff(
+                        base = 500L,
+                        multiplier = 2f,
+                        retry = connectionAttempt.getAndIncrement()
+                    )
+                println { "Waiting $timeMillis ms to reconnect..." }
+                delay(timeMillis)
+                connect()
+            }
+            .launchIn(this)
+    }
+
+    private fun CoroutineScope.connect() {
+        connectionAttempt.incrementAndGet()
+        launch {
+            println { "connect" }
+            try {
+                peripheral.connect()
+                connectionAttempt.set(0)
+            } catch (e: ConnectionLostException) {
+                println { "Connection attempt failed" }
+            }
         }
-        mConnectThread = ConnectThread()
-        mConnectThread.start()
-    }
-
-
-    private fun connected(mmSocket: BluetoothSocket) {
-        // Start the thread to manage the connection and perform transmissions
-        mConnectedThread = ConnectedThread(mmSocket)
-        mConnectedThread.start()
-    }
-
-    private fun connectionLost() {
-        connectionState = "Connection Lost"
-        mState = mutableStateOf(STATE_NONE)
-        mConnectedThread.cancel()
-        connect()
     }
 
     @SuppressLint("MissingPermission")
@@ -168,25 +202,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun findDevice(name: String = "RZ67 Blaa"): BluetoothDevice? {
-        // Find all paired devices
-        if (ActivityCompat.checkSelfPermission(
-                applicationContext,
-                Manifest.permission.BLUETOOTH_CONNECT
-            ) == PackageManager.PERMISSION_GRANTED
-        ) {
-            val pairedDevices = bluetoothAdapter.bondedDevices
-            val find = pairedDevices.find { it.name == name }
-            if (find != null) {
-                return find
-            }
-        }
-        return null
-    }
-
-    private fun enableBluetooth() {
-        takePermission.launch(Manifest.permission.BLUETOOTH_CONNECT) // Setup bluetooth
-    }
 
     @Composable
     fun ToggleButton(toggleButton: () -> Unit, modifier: Modifier = Modifier, text: String) {
@@ -213,7 +228,7 @@ class MainActivity : ComponentActivity() {
                     }, text = "Mode")
                 }
                 else -> {
-                // If current trigger type is direct, show countdown button
+                    // If current trigger type is direct, show countdown button
                     ToggleButton(toggleButton = {
                         triggerType = TriggerType.Countdown
                     }, text = "Mode")
@@ -277,7 +292,7 @@ class MainActivity : ComponentActivity() {
             },
             modifier = Modifier
                 .padding(top = 50.dp),
-            enabled = this::mConnectedThread.isInitialized,
+            enabled = mState.value == STATE_CONNECTED,
         )
         {
             Text(text = "Trigger shutter", modifier = Modifier.padding(end = 10.dp))
@@ -305,7 +320,8 @@ class MainActivity : ComponentActivity() {
                 .fillMaxWidth()
                 .wrapContentWidth(Alignment.CenterHorizontally)
                 .padding(start = 16.dp, end = 16.dp),
-            text = "$timeLeftMs ms left")
+            text = "$timeLeftMs ms left"
+        )
         when (timeLeftMs) {
             0L -> {
                 Toast.makeText(applicationContext, "Take picture", Toast.LENGTH_SHORT).show()
@@ -354,7 +370,6 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-
     @Preview(showBackground = true)
     @Composable
     fun DefaultPreview() {
@@ -369,143 +384,36 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun sendSignal(signalType: SignalType = SignalType.Trigger, on: Boolean = true) {
-        when (signalType) {
-            SignalType.Trigger -> {
-                if (on) {
-                    mConnectedThread.write(byteArrayOf(11.toByte()))
-                }
-                else {
-                    mConnectedThread.write(byteArrayOf(10.toByte()))
-                }
-            }
-            SignalType.Blink -> {
-                if (on) {
-                    mConnectedThread.write(byteArrayOf(21.toByte()))
-                } else {
-                    mConnectedThread.write(byteArrayOf(20.toByte()))
+        scope.launch {
+            withContext(Dispatchers.Main) {
+                val characteristic = characteristicOf(
+                    targetServiceUUID.toString(),
+                    targetCharacteristicUUID.toString()
+                )
+                when (signalType) {
+                    SignalType.Trigger -> {
+                        if (on) {
+                            println("Sending trigger signal")
+                            peripheral.write(characteristic, byteArrayOf(11.toByte()))
+                        } else {
+                            println("Sending stop signal")
+                            peripheral.write(characteristic, byteArrayOf(10.toByte()))
+                        }
+                    }
+                    SignalType.Blink -> {
+                        if (on) {
+                            println("Sending blink signal")
+                            peripheral.write(characteristic, byteArrayOf(21.toByte()))
+                        } else {
+                            println("Sending stop signal")
+                            peripheral.write(characteristic, byteArrayOf(20.toByte()))
+                        }
+                    }
                 }
             }
         }
     }
 
-    @SuppressLint("MissingPermission")
-    inner class ConnectThread : Thread() {
-        private lateinit var mmSocket: BluetoothSocket
-
-        /**
-         * Warning! THIS UUID IS NOT RANDOM!
-         *
-         * Even though the android docs state:
-         * "To get a UUID to use with your app, you can use one of the many random UUID generators
-         *  on the web, then initialize a UUID with fromString(String)."
-         *
-         *  This is a lie. Do not change.
-         */
-        val uuid: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
-        override fun run() {
-
-            mState = mutableStateOf(STATE_CONNECTING)
-
-            connectionState = "Looking for RZ67..."
-            var count = 0
-
-            while (mState.value != STATE_CONNECTED) {
-                count++
-                // Connect to the remote device through the socket. This call blocks
-                // until it succeeds or throws an exception.
-                try {
-                    // Connect to the remote device through the socket. This call blocks
-                    // until it succeeds or throws an exception.
-                    bluetoothDevice = findDevice().also {
-                        bluetoothAdapter.cancelDiscovery()
-                    }
-
-                    bluetoothDevice?.createRfcommSocketToServiceRecord(uuid)?.let {
-                        mmSocket = it
-                        mmSocket.connect()
-                        connected(mmSocket)
-                    }
-                } catch (connectException: IOException) {
-                    // Unable to connect; close the socket and return.
-                    try {
-                        mmSocket.close()
-                    } catch (closeException: IOException) {
-
-                    }
-                }
-                if (count > 10 && mState.value != STATE_CONNECTED) {
-                    connectionState = "Can't connect. Is the trigger paired to the phone?"
-                }
-                sleep(100)
-            }
-        }
-
-        // Closes the client socket and causes the thread to finish.
-        fun cancel() {
-            try {
-                mmSocket.close()
-            } catch (e: IOException) {
-
-            }
-        }
-
-    }
-
-    @SuppressLint("MissingPermission")
-    inner class ConnectedThread(socket: BluetoothSocket) : Thread() {
-        private val mmSocket: BluetoothSocket
-        private val mmInStream: InputStream?
-        private val mmOutStream: OutputStream?
-
-        init {
-            mmSocket = socket
-            var tmpIn: InputStream? = null
-            var tmpOut: OutputStream? = null
-            try {
-                tmpIn = mmSocket.inputStream
-                tmpOut = mmSocket.outputStream
-            } catch (e: IOException) {
-                e.printStackTrace()
-            }
-            mmInStream = tmpIn
-            mmOutStream = tmpOut
-            mState = mutableStateOf(STATE_CONNECTED)
-            connectionState = "Connected to ${bluetoothDevice?.name}"
-        }
-
-        override fun run() {
-            val buffer = ByteArray(1024) // buffer store for the stream
-            var bytes: Int? // bytes returned from read()
-
-            // Keep listening to the InputStream while connected
-            while (mState.value == STATE_CONNECTED) {
-                try {
-                    // Read from the InputStream
-                    bytes = mmInStream!!.read(buffer)
-                    // TODO
-
-                } catch (e: IOException) {
-                    connectionLost()
-                    break
-                }
-            }
-        }
-
-        fun write(bytes: ByteArray?) {
-            try {
-                mmOutStream?.write(bytes)
-            } catch (e: IOException) {
-            }
-        }
-
-        /* Call this from the main activity to shutdown the connection */
-        fun cancel() {
-            try {
-                mmSocket.close()
-            } catch (e: IOException) {
-            }
-        }
-    }
 
     private fun checkPermissions() {
         val permissions = arrayOf(
@@ -527,5 +435,11 @@ class MainActivity : ComponentActivity() {
             )
         }
     }
+
+    private fun backoff(
+        base: Long,
+        multiplier: Float,
+        retry: Int,
+    ): Long = (base * multiplier.pow(retry - 1)).toLong()
 
 }
