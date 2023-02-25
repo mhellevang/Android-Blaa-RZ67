@@ -46,12 +46,16 @@ class MainActivity : ComponentActivity() {
     companion object {
         // UUID of RZ67 Blaa services
         val targetServiceUUID: UUID = UUID.fromString("c9239c9e-6fc9-4168-b3aa-53105eb990b0")
+
         // UUID of RZ67 Blaa characteristic
         val targetCharacteristicUUID: UUID = UUID.fromString("458d4dc9-349f-401d-b092-a2b1c55f5319")
         var connectionState by mutableStateOf("Not connected")
         var mState = mutableStateOf(0) //
         const val STATE_NONE = 0 // we're doing nothing
         const val STATE_CONNECTED = 3 // now connected to a remote device
+
+        var startDelayedTrigger by mutableStateOf(false)
+
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -211,10 +215,11 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun TriggerButtonPanel() {
         var triggerType by remember { mutableStateOf(TriggerType.Direct) }
-        var showCountDownTimer by remember { mutableStateOf(false) }
         fun delayedTrigger() {
-            sendSignal(SignalType.Trigger, false)
-            showCountDownTimer = false
+            if (startDelayedTrigger) {
+                sendSignal(SignalType.Trigger, false)
+                startDelayedTrigger = false
+            }
         }
 
         Row(
@@ -258,8 +263,7 @@ class MainActivity : ComponentActivity() {
                 )
             }
             TriggerType.Countdown -> {
-                if (showCountDownTimer) {
-                    sendSignal(SignalType.Blink)
+                if (startDelayedTrigger) {
                     StartTimer(::delayedTrigger)
                 } else {
                     Text(
@@ -281,11 +285,12 @@ class MainActivity : ComponentActivity() {
                 if (triggerType == TriggerType.Direct) {
                     sendSignal(SignalType.Trigger)
                 } else {
-                    showCountDownTimer = if (showCountDownTimer) {
+                    startDelayedTrigger = if (startDelayedTrigger) {
                         // Cancel timer
                         sendSignal(SignalType.Blink, false)
                         false
                     } else {
+                        sendSignal(SignalType.Blink, true)
                         true
                     }
                 }
@@ -322,12 +327,27 @@ class MainActivity : ComponentActivity() {
                 .padding(start = 16.dp, end = 16.dp),
             text = "$timeLeftMs ms left"
         )
+
+        LaunchedEffect(timeLeftMs) {
+            scope.launch {
+                withContext(Dispatchers.IO) {
+                    while (isActive && timeLeftMs > 0) {
+                        delay(50)
+                    }
+                    when (timeLeftMs) {
+                        0L -> {
+                            done()
+                        }
+                    }
+                }
+            }
+        }
         when (timeLeftMs) {
             0L -> {
                 Toast.makeText(applicationContext, "Take picture", Toast.LENGTH_SHORT).show()
-                done()
             }
         }
+
     }
 
     @Composable
@@ -385,7 +405,7 @@ class MainActivity : ComponentActivity() {
 
     private fun sendSignal(signalType: SignalType = SignalType.Trigger, on: Boolean = true) {
         scope.launch {
-            withContext(Dispatchers.Main) {
+            withContext(Dispatchers.IO) {
                 val characteristic = characteristicOf(
                     targetServiceUUID.toString(),
                     targetCharacteristicUUID.toString()
