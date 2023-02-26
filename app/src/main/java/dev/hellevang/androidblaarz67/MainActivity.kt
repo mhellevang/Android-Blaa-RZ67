@@ -371,7 +371,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun HeaderText() {
         Text(
-            text = "Blåtann RZ67",
+            text = "Android Blaa RZ67",
             fontSize = 36.sp,
             color = Color.White,
             modifier = Modifier
