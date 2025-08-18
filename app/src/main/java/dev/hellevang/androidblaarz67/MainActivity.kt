@@ -42,6 +42,7 @@ class MainActivity : ComponentActivity() {
     lateinit var bluetoothLeScanner: BluetoothLeScanner
     lateinit var peripheral: Peripheral
     private val connectionAttempt = AtomicInteger()
+    private var countdownJob: Job? = null
 
     companion object {
         // UUID of RZ67 Blaa services
@@ -55,6 +56,7 @@ class MainActivity : ComponentActivity() {
         const val STATE_CONNECTED = 3 // now connected to a remote device
 
         var startDelayedTrigger by mutableStateOf(false)
+        var countdownTimeLeft by mutableStateOf(0)
 
     }
 
@@ -215,12 +217,6 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun TriggerButtonPanel() {
         var triggerType by remember { mutableStateOf(TriggerType.Direct) }
-        fun delayedTrigger() {
-            if (startDelayedTrigger) {
-                sendSignal(SignalType.Trigger, false)
-                startDelayedTrigger = false
-            }
-        }
 
         Row(
             modifier = Modifier.padding(top = 100.dp)
@@ -264,7 +260,30 @@ class MainActivity : ComponentActivity() {
             }
             TriggerType.Countdown -> {
                 if (startDelayedTrigger) {
-                    StartTimer(::delayedTrigger)
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            fontSize = 18.sp,
+                            color = Color.White,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .wrapContentWidth(Alignment.CenterHorizontally)
+                                .padding(start = 16.dp, end = 16.dp),
+                            text = "Arduino countdown in progress..."
+                        )
+                        if (countdownTimeLeft > 0) {
+                            Text(
+                                fontSize = 32.sp,
+                                color = Color.Yellow,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .wrapContentWidth(Alignment.CenterHorizontally)
+                                    .padding(top = 8.dp),
+                                text = "$countdownTimeLeft"
+                            )
+                        }
+                    }
                 } else {
                     Text(
                         fontSize = 18.sp,
@@ -273,7 +292,7 @@ class MainActivity : ComponentActivity() {
                             .fillMaxWidth()
                             .wrapContentWidth(Alignment.CenterHorizontally)
                             .padding(start = 16.dp, end = 16.dp),
-                        text = "Press to start 10s countdown"
+                        text = "Press to start 10s countdown on Arduino"
                     )
                 }
             }
@@ -286,11 +305,14 @@ class MainActivity : ComponentActivity() {
                     sendSignal(SignalType.Trigger)
                 } else {
                     startDelayedTrigger = if (startDelayedTrigger) {
-                        // Cancel timer
-                        sendSignal(SignalType.Blink, false)
+                        // Cancel Arduino countdown
+                        sendSignal(SignalType.ArduinoCountdown, false)
+                        stopCountdownTimer()
                         false
                     } else {
-                        sendSignal(SignalType.Blink, true)
+                        // Start Arduino countdown
+                        sendSignal(SignalType.ArduinoCountdown, true)
+                        startCountdownTimer()
                         true
                     }
                 }
@@ -315,58 +337,6 @@ class MainActivity : ComponentActivity() {
         Countdown
     }
 
-    @Composable
-    fun StartTimer(done: () -> Unit) {
-        val timeLeftMs by rememberCountdownTimerState(10_000)
-        Text(
-            fontSize = 18.sp,
-            color = Color.White,
-            modifier = Modifier
-                .fillMaxWidth()
-                .wrapContentWidth(Alignment.CenterHorizontally)
-                .padding(start = 16.dp, end = 16.dp),
-            text = "$timeLeftMs ms left"
-        )
-
-        LaunchedEffect(timeLeftMs) {
-            scope.launch {
-                withContext(Dispatchers.IO) {
-                    while (isActive && timeLeftMs > 0) {
-                        delay(50)
-                    }
-                    when (timeLeftMs) {
-                        0L -> {
-                            done()
-                        }
-                    }
-                }
-            }
-        }
-        when (timeLeftMs) {
-            0L -> {
-                Toast.makeText(applicationContext, "Take picture", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-    }
-
-    @Composable
-    fun rememberCountdownTimerState(
-        initialMillis: Long,
-        step: Long = 50
-    ): MutableState<Long> {
-        val timeLeft = remember { mutableStateOf(initialMillis) }
-        LaunchedEffect(initialMillis, step) {
-            val startTime = SystemClock.uptimeMillis()
-            while (isActive && timeLeft.value > 0) {
-                // how much time actually passed
-                val duration = (SystemClock.uptimeMillis() - startTime).coerceAtLeast(0)
-                timeLeft.value = (initialMillis - duration).coerceAtLeast(0)
-                delay(step.coerceAtMost(timeLeft.value))
-            }
-        }
-        return timeLeft
-    }
 
     @Composable
     fun HeaderText() {
@@ -400,7 +370,8 @@ class MainActivity : ComponentActivity() {
 
     enum class SignalType {
         Trigger,
-        Blink
+        Blink,
+        ArduinoCountdown
     }
 
     private fun sendSignal(signalType: SignalType = SignalType.Trigger, on: Boolean = true) {
@@ -427,6 +398,15 @@ class MainActivity : ComponentActivity() {
                         } else {
                             println("Sending stop signal")
                             peripheral.write(characteristic, byteArrayOf(20.toByte()))
+                        }
+                    }
+                    SignalType.ArduinoCountdown -> {
+                        if (on) {
+                            println("Sending Arduino countdown start signal")
+                            peripheral.write(characteristic, byteArrayOf(31.toByte()))
+                        } else {
+                            println("Sending Arduino countdown stop signal")
+                            peripheral.write(characteristic, byteArrayOf(30.toByte()))
                         }
                     }
                 }
@@ -461,5 +441,24 @@ class MainActivity : ComponentActivity() {
         multiplier: Float,
         retry: Int,
     ): Long = (base * multiplier.pow(retry - 1)).toLong()
+
+    private fun startCountdownTimer() {
+        countdownJob?.cancel()
+        countdownTimeLeft = 10
+        countdownJob = scope.launch {
+            repeat(10) {
+                delay(1000)
+                countdownTimeLeft--
+            }
+            // Countdown finished
+            startDelayedTrigger = false
+            countdownTimeLeft = 0
+        }
+    }
+
+    private fun stopCountdownTimer() {
+        countdownJob?.cancel()
+        countdownTimeLeft = 0
+    }
 
 }
