@@ -413,7 +413,6 @@ class MainActivity : ComponentActivity() {
 
     enum class SignalType {
         Trigger,
-        Blink,
         ArduinoCountdown
     }
 
@@ -432,15 +431,6 @@ class MainActivity : ComponentActivity() {
                         } else {
                             println("Sending stop signal")
                             peripheral.write(characteristic, byteArrayOf(10.toByte()))
-                        }
-                    }
-                    SignalType.Blink -> {
-                        if (on) {
-                            println("Sending blink signal")
-                            peripheral.write(characteristic, byteArrayOf(21.toByte()))
-                        } else {
-                            println("Sending stop signal")
-                            peripheral.write(characteristic, byteArrayOf(20.toByte()))
                         }
                     }
                     SignalType.ArduinoCountdown -> {
