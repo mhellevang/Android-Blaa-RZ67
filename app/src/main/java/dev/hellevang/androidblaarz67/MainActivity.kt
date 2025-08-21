@@ -4,38 +4,73 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
-import android.bluetooth.le.*
+import android.bluetooth.le.BluetoothLeScanner
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.os.*
+import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.*
-import androidx.compose.material.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.material.Button
+import androidx.compose.material.Icon
+import androidx.compose.material.MaterialTheme
+import androidx.compose.material.Surface
+import androidx.compose.material.Text
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Camera
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
-import com.juul.kable.*
+import androidx.core.view.WindowCompat
+import com.juul.kable.ConnectionLostException
+import com.juul.kable.Filter
+import com.juul.kable.Peripheral
+import com.juul.kable.Scanner
 import com.juul.kable.State
+import com.juul.kable.characteristicOf
+import com.juul.kable.peripheral
 import dev.hellevang.androidblaarz67.ui.theme.AndroidBlaaRZ67Theme
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.*
-import java.util.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.pow
+import androidx.core.graphics.toColorInt
 
 
 class MainActivity : ComponentActivity() {
@@ -64,6 +99,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Set system UI colors to match theme
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.statusBarColor = "#FBE7C9".toColorInt()
+        window.navigationBarColor = "#FBE7C9".toColorInt()
+        
         checkPermissions()
 
         val bluetoothManager = getSystemService(BLUETOOTH_SERVICE) as BluetoothManager
@@ -169,7 +209,7 @@ class MainActivity : ComponentActivity() {
     fun AndroidBlaaRZ67App() {
 
         val image =
-            painterResource(R.drawable.dall_e_2023_01_03_20_12_46___a_synthwave_sketch_of_the_mamiya_rz67_)
+            painterResource(R.drawable.d3fe691b34130991a5bf05a25d54d74300316eaff150963be736948feb5ec159)
         Box {
             Image(
                 painter = image,
@@ -181,7 +221,9 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        Column {
+        Column(
+            modifier = Modifier.statusBarsPadding()
+        ) {
             HeaderText()
             Spacer(modifier = Modifier.padding(top = 25.dp))
 
@@ -193,7 +235,7 @@ class MainActivity : ComponentActivity() {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                Text(connectionState, color = Color.White)
+                Text(connectionState, color = MaterialTheme.colors.onBackground)
             }
 
             Column(
@@ -239,7 +281,7 @@ class MainActivity : ComponentActivity() {
         }
         Text(
             fontSize = 24.sp,
-            color = Color.White,
+            color = MaterialTheme.colors.onBackground,
             modifier = Modifier
                 .fillMaxWidth()
                 .wrapContentWidth(Alignment.CenterHorizontally)
@@ -251,7 +293,7 @@ class MainActivity : ComponentActivity() {
             TriggerType.Direct -> {
                 Text(
                     fontSize = 18.sp,
-                    color = Color.White,
+                    color = MaterialTheme.colors.onBackground,
                     modifier = Modifier
                         .fillMaxWidth()
                         .wrapContentWidth(Alignment.CenterHorizontally)
@@ -266,7 +308,7 @@ class MainActivity : ComponentActivity() {
                     ) {
                         Text(
                             fontSize = 18.sp,
-                            color = Color.White,
+                            color = MaterialTheme.colors.onBackground,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .wrapContentWidth(Alignment.CenterHorizontally)
@@ -276,7 +318,7 @@ class MainActivity : ComponentActivity() {
                         if (countdownTimeLeft > 0) {
                             Text(
                                 fontSize = 32.sp,
-                                color = Color.Yellow,
+                                color = MaterialTheme.colors.secondary,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .wrapContentWidth(Alignment.CenterHorizontally)
@@ -288,7 +330,7 @@ class MainActivity : ComponentActivity() {
                 } else {
                     Text(
                         fontSize = 18.sp,
-                        color = Color.White,
+                        color = MaterialTheme.colors.onBackground,
                         modifier = Modifier
                             .fillMaxWidth()
                             .wrapContentWidth(Alignment.CenterHorizontally)
@@ -327,7 +369,7 @@ class MainActivity : ComponentActivity() {
             Icon(
                 imageVector = Icons.Default.Camera,
                 contentDescription = null,
-                tint = Color.White
+                tint = MaterialTheme.colors.onPrimary
             )
         }
 
@@ -344,7 +386,7 @@ class MainActivity : ComponentActivity() {
         Text(
             text = "Android Blaa RZ67",
             fontSize = 36.sp,
-            color = Color.White,
+            color = MaterialTheme.colors.onBackground,
             modifier = Modifier
                 .fillMaxWidth()
                 .wrapContentWidth(Alignment.CenterHorizontally)
@@ -353,7 +395,7 @@ class MainActivity : ComponentActivity() {
         Text(
             text = "A Mamiya RZ67 bluetooth trigger",
             fontSize = 24.sp,
-            color = Color.White,
+            color = MaterialTheme.colors.onBackground,
             textAlign = TextAlign.Center,
             modifier = Modifier
                 .fillMaxWidth()
