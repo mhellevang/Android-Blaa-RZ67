@@ -32,9 +32,6 @@ import androidx.compose.material.icons.filled.Camera
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -44,24 +41,21 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
-import androidx.core.view.WindowCompat
-import dev.hellevang.openrz67.ui.theme.OpenRZ67Theme
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.MainScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import androidx.core.graphics.toColorInt
+import androidx.core.view.WindowCompat
+import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.hellevang.openrz67.bluetooth.BluetoothManager
+import dev.hellevang.openrz67.ui.theme.OpenRZ67Theme
+import dev.hellevang.openrz67.viewmodel.TriggerControlViewModel
+import kotlinx.coroutines.MainScope
 
 
 class MainActivity : ComponentActivity() {
     private val scope = MainScope()
     private lateinit var bluetoothManager: BluetoothManager
-    private var countdownJob: Job? = null
 
     companion object {
-        var startDelayedTrigger by mutableStateOf(false)
-        var countdownTimeLeft by mutableStateOf(0)
+        // Moved to CameraViewModel
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -95,16 +89,14 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("MissingPermission")
     @Composable
     fun OpenRZ67App() {
-        val connectionState by if (::bluetoothManager.isInitialized) {
-            bluetoothManager.connectionState.collectAsState()
+        val viewModel: TriggerControlViewModel = if (::bluetoothManager.isInitialized) {
+            viewModel { TriggerControlViewModel(bluetoothManager) }
         } else {
-            remember { mutableStateOf("Initializing...") }
+            return // Don't render if Bluetooth manager isn't ready
         }
-        val isConnected by if (::bluetoothManager.isInitialized) {
-            bluetoothManager.isConnected.collectAsState()
-        } else {
-            remember { mutableStateOf(false) }
-        }
+        
+        val connectionState by viewModel.connectionState.collectAsState()
+        val isConnected by viewModel.isConnected.collectAsState()
 
         val image =
             painterResource(R.drawable.d3fe691b34130991a5bf05a25d54d74300316eaff150963be736948feb5ec159)
@@ -144,7 +136,7 @@ class MainActivity : ComponentActivity() {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                TriggerButtonPanel(isConnected)
+                TriggerButtonPanel(viewModel, isConnected)
             }
         }
     }
@@ -156,26 +148,17 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    fun TriggerButtonPanel(isConnected: Boolean) {
-        var triggerType by remember { mutableStateOf(TriggerType.Direct) }
+    fun TriggerButtonPanel(viewModel: TriggerControlViewModel, isConnected: Boolean) {
+        val triggerType by viewModel.triggerType.collectAsState()
+        val startDelayedTrigger by viewModel.startDelayedTrigger.collectAsState()
+        val countdownTimeLeft by viewModel.countdownTimeLeft.collectAsState()
 
         Row(
             modifier = Modifier.padding(top = 100.dp)
         ) {
-            when (triggerType) {
-                // If current trigger type is countdown, show direct button
-                TriggerType.Countdown -> {
-                    ToggleButton(toggleButton = {
-                        triggerType = TriggerType.Direct
-                    }, text = "Mode")
-                }
-                else -> {
-                    // If current trigger type is direct, show countdown button
-                    ToggleButton(toggleButton = {
-                        triggerType = TriggerType.Countdown
-                    }, text = "Mode")
-                }
-            }
+            ToggleButton(toggleButton = {
+                viewModel.toggleTriggerType()
+            }, text = "Mode")
         }
         Text(
             fontSize = 24.sp,
@@ -188,7 +171,7 @@ class MainActivity : ComponentActivity() {
         )
         Spacer(modifier = Modifier.padding(top = 15.dp))
         when (triggerType) {
-            TriggerType.Direct -> {
+            TriggerControlViewModel.TriggerType.Direct -> {
                 Text(
                     fontSize = 18.sp,
                     color = MaterialTheme.colors.onBackground,
@@ -199,7 +182,7 @@ class MainActivity : ComponentActivity() {
                     text = "Press the button to take a picture"
                 )
             }
-            TriggerType.Countdown -> {
+            TriggerControlViewModel.TriggerType.Countdown -> {
                 if (startDelayedTrigger) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally
@@ -240,25 +223,8 @@ class MainActivity : ComponentActivity() {
         }
 
         Button(
-            onClick =
-            {
-                if (::bluetoothManager.isInitialized) {
-                    if (triggerType == TriggerType.Direct) {
-                        bluetoothManager.sendSignal(BluetoothManager.SignalType.Trigger)
-                    } else {
-                        startDelayedTrigger = if (startDelayedTrigger) {
-                            // Cancel Arduino countdown
-                            bluetoothManager.sendSignal(BluetoothManager.SignalType.ArduinoCountdown, false)
-                            stopCountdownTimer()
-                            false
-                        } else {
-                            // Start Arduino countdown
-                            bluetoothManager.sendSignal(BluetoothManager.SignalType.ArduinoCountdown, true)
-                            startCountdownTimer()
-                            true
-                        }
-                    }
-                }
+            onClick = {
+                viewModel.handleTriggerButtonClick()
             },
             modifier = Modifier
                 .padding(top = 50.dp),
@@ -273,11 +239,6 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-    }
-
-    enum class TriggerType {
-        Direct,
-        Countdown
     }
 
 
@@ -307,10 +268,15 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun DefaultPreview() {
         OpenRZ67Theme {
-            OpenRZ67App()
+            // Preview version without ViewModel dependencies
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colors.background
+            ) {
+                HeaderText()
+            }
         }
     }
-
 
     private fun checkPermissions() {
         val permissions = arrayOf(
@@ -360,25 +326,6 @@ class MainActivity : ComponentActivity() {
             }
 
         takePermission.launch(Manifest.permission.BLUETOOTH_CONNECT)
-    }
-
-    private fun startCountdownTimer() {
-        countdownJob?.cancel()
-        countdownTimeLeft = 10
-        countdownJob = scope.launch {
-            repeat(10) {
-                delay(1000)
-                countdownTimeLeft--
-            }
-            // Countdown finished
-            startDelayedTrigger = false
-            countdownTimeLeft = 0
-        }
-    }
-
-    private fun stopCountdownTimer() {
-        countdownJob?.cancel()
-        countdownTimeLeft = 0
     }
 
     override fun onDestroy() {
