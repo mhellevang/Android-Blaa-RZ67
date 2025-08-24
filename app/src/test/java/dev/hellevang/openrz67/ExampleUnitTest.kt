@@ -1,4 +1,4 @@
-package dev.hellevang.androidblaarz67
+package dev.hellevang.openrz67
 
 import org.junit.Test
 

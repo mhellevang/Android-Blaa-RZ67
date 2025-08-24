@@ -1,4 +1,4 @@
-package dev.hellevang.androidblaarz67.ui.theme
+package dev.hellevang.openrz67.ui.theme
 
 import androidx.compose.material.MaterialTheme
 import androidx.compose.material.darkColors
@@ -19,7 +19,7 @@ private val DarkColorPalette = darkColors(
 )
 
 @Composable
-fun AndroidBlaaRZ67Theme(
+fun OpenRZ67Theme(
     content: @Composable () -> Unit
 ) {
     val colors = DarkColorPalette

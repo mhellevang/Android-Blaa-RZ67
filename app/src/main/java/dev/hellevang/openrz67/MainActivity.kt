@@ -1,10 +1,8 @@
-package dev.hellevang.androidblaarz67
+package dev.hellevang.openrz67
 
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothManager
-import android.bluetooth.le.BluetoothLeScanner
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -32,6 +30,7 @@ import androidx.compose.material.Text
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Camera
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,54 +45,23 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.core.view.WindowCompat
-import com.juul.kable.ConnectionLostException
-import com.juul.kable.Filter
-import com.juul.kable.Peripheral
-import com.juul.kable.Scanner
-import com.juul.kable.State
-import com.juul.kable.characteristicOf
-import com.juul.kable.peripheral
-import dev.hellevang.androidblaarz67.ui.theme.AndroidBlaaRZ67Theme
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import dev.hellevang.openrz67.ui.theme.OpenRZ67Theme
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.util.UUID
-import java.util.concurrent.atomic.AtomicInteger
-import kotlin.math.pow
 import androidx.core.graphics.toColorInt
+import dev.hellevang.openrz67.bluetooth.BluetoothManager
 
 
 class MainActivity : ComponentActivity() {
     private val scope = MainScope()
-    lateinit var bluetoothLeScanner: BluetoothLeScanner
-    lateinit var peripheral: Peripheral
-    private val connectionAttempt = AtomicInteger()
+    private lateinit var bluetoothManager: BluetoothManager
     private var countdownJob: Job? = null
 
     companion object {
-        // UUID of RZ67 Blaa services
-        val targetServiceUUID: UUID = UUID.fromString("c9239c9e-6fc9-4168-b3aa-53105eb990b0")
-
-        // UUID of RZ67 Blaa characteristic
-        val targetCharacteristicUUID: UUID = UUID.fromString("458d4dc9-349f-401d-b092-a2b1c55f5319")
-        var connectionState by mutableStateOf("Not connected")
-        var mState = mutableStateOf(0) //
-        const val STATE_NONE = 0 // we're doing nothing
-        const val STATE_CONNECTED = 3 // now connected to a remote device
-
         var startDelayedTrigger by mutableStateOf(false)
         var countdownTimeLeft by mutableStateOf(0)
-
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -105,108 +73,38 @@ class MainActivity : ComponentActivity() {
         window.navigationBarColor = "#FBE7C9".toColorInt()
         
         checkPermissions()
-
-        val bluetoothManager = getSystemService(BLUETOOTH_SERVICE) as BluetoothManager
-        val bluetoothAdapter = bluetoothManager.adapter
-        val takeResultLauncher = registerForActivityResult(
-            ActivityResultContracts.StartActivityForResult()
-        ) { result ->
-            if (result.resultCode == RESULT_OK) {
-                Toast.makeText(applicationContext, "Bluetooth ON", Toast.LENGTH_LONG).show()
-
-            } else {
-                Toast.makeText(applicationContext, "Bluetooth Off", Toast.LENGTH_LONG).show()
-            }
-        }
-        val takePermission =
-            registerForActivityResult(ActivityResultContracts.RequestPermission()) {
-                if (it) {
-                    val intent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-                    takeResultLauncher.launch(intent)
-                } else {
-                    Toast.makeText(
-                        applicationContext,
-                        "Bluetooth Permission is not Granted",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            }
-
-        takePermission.launch(Manifest.permission.BLUETOOTH_CONNECT)
-        bluetoothLeScanner = bluetoothAdapter.bluetoothLeScanner
-
-        scope.launch {
-            val advertisement = Scanner {
-                filters = listOf(Filter.Service(targetServiceUUID))
-            }.advertisements.first()
-
-            awaitAll(
-                async {
-                    peripheral = scope.peripheral(advertisement)
-                }
-            )
-            scope.enableAutoReconnect()
-            scope.connect()
-            scope.launch {
-                peripheral.state.collect { state ->
-                    connectionState = state.toString()
-                    if (state is State.Connected) {
-                        mState.value = STATE_CONNECTED
-                    } else {
-                        mState.value = STATE_NONE
-                    }
-                    println("Connection State $connectionState")
-                }
-            }
-        }
+        initializeBluetooth()
+        
+        bluetoothManager = BluetoothManager(this, scope)
+        bluetoothManager.initialize()
 
         setContent {
-            AndroidBlaaRZ67Theme {
+            OpenRZ67Theme {
                 // A surface container using the 'background' color from the theme
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colors.background
                 ) {
-                    AndroidBlaaRZ67App()
+                    OpenRZ67App()
                 }
             }
         }
     }
 
-    private fun CoroutineScope.enableAutoReconnect() {
-        peripheral.state
-            .filter { it is State.Disconnected }
-            .onEach {
-                val timeMillis =
-                    backoff(
-                        base = 500L,
-                        multiplier = 2f,
-                        retry = connectionAttempt.getAndIncrement()
-                    )
-                println { "Waiting $timeMillis ms to reconnect..." }
-                delay(timeMillis)
-                connect()
-            }
-            .launchIn(this)
-    }
-
-    private fun CoroutineScope.connect() {
-        connectionAttempt.incrementAndGet()
-        launch {
-            println { "connect" }
-            try {
-                peripheral.connect()
-                connectionAttempt.set(0)
-            } catch (e: ConnectionLostException) {
-                println { "Connection attempt failed" }
-            }
-        }
-    }
 
     @SuppressLint("MissingPermission")
-    @Preview
     @Composable
-    fun AndroidBlaaRZ67App() {
+    fun OpenRZ67App() {
+        val connectionState by if (::bluetoothManager.isInitialized) {
+            bluetoothManager.connectionState.collectAsState()
+        } else {
+            remember { mutableStateOf("Initializing...") }
+        }
+        val isConnected by if (::bluetoothManager.isInitialized) {
+            bluetoothManager.isConnected.collectAsState()
+        } else {
+            remember { mutableStateOf(false) }
+        }
 
         val image =
             painterResource(R.drawable.d3fe691b34130991a5bf05a25d54d74300316eaff150963be736948feb5ec159)
@@ -246,7 +144,7 @@ class MainActivity : ComponentActivity() {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                TriggerButtonPanel()
+                TriggerButtonPanel(isConnected)
             }
         }
     }
@@ -258,7 +156,7 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    fun TriggerButtonPanel() {
+    fun TriggerButtonPanel(isConnected: Boolean) {
         var triggerType by remember { mutableStateOf(TriggerType.Direct) }
 
         Row(
@@ -344,25 +242,27 @@ class MainActivity : ComponentActivity() {
         Button(
             onClick =
             {
-                if (triggerType == TriggerType.Direct) {
-                    sendSignal(SignalType.Trigger)
-                } else {
-                    startDelayedTrigger = if (startDelayedTrigger) {
-                        // Cancel Arduino countdown
-                        sendSignal(SignalType.ArduinoCountdown, false)
-                        stopCountdownTimer()
-                        false
+                if (::bluetoothManager.isInitialized) {
+                    if (triggerType == TriggerType.Direct) {
+                        bluetoothManager.sendSignal(BluetoothManager.SignalType.Trigger)
                     } else {
-                        // Start Arduino countdown
-                        sendSignal(SignalType.ArduinoCountdown, true)
-                        startCountdownTimer()
-                        true
+                        startDelayedTrigger = if (startDelayedTrigger) {
+                            // Cancel Arduino countdown
+                            bluetoothManager.sendSignal(BluetoothManager.SignalType.ArduinoCountdown, false)
+                            stopCountdownTimer()
+                            false
+                        } else {
+                            // Start Arduino countdown
+                            bluetoothManager.sendSignal(BluetoothManager.SignalType.ArduinoCountdown, true)
+                            startCountdownTimer()
+                            true
+                        }
                     }
                 }
             },
             modifier = Modifier
                 .padding(top = 50.dp),
-            enabled = mState.value == STATE_CONNECTED,
+            enabled = isConnected,
         )
         {
             Text(text = "Trigger shutter", modifier = Modifier.padding(end = 10.dp))
@@ -384,7 +284,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun HeaderText() {
         Text(
-            text = "Android Blaa RZ67",
+            text = "OpenRZ67",
             fontSize = 36.sp,
             color = MaterialTheme.colors.onBackground,
             modifier = Modifier
@@ -406,44 +306,8 @@ class MainActivity : ComponentActivity() {
     @Preview(showBackground = true)
     @Composable
     fun DefaultPreview() {
-        AndroidBlaaRZ67Theme {
-            AndroidBlaaRZ67App()
-        }
-    }
-
-    enum class SignalType {
-        Trigger,
-        ArduinoCountdown
-    }
-
-    private fun sendSignal(signalType: SignalType = SignalType.Trigger, on: Boolean = true) {
-        scope.launch {
-            withContext(Dispatchers.IO) {
-                val characteristic = characteristicOf(
-                    targetServiceUUID.toString(),
-                    targetCharacteristicUUID.toString()
-                )
-                when (signalType) {
-                    SignalType.Trigger -> {
-                        if (on) {
-                            println("Sending trigger signal")
-                            peripheral.write(characteristic, byteArrayOf(11.toByte()))
-                        } else {
-                            println("Sending stop signal")
-                            peripheral.write(characteristic, byteArrayOf(10.toByte()))
-                        }
-                    }
-                    SignalType.ArduinoCountdown -> {
-                        if (on) {
-                            println("Sending Arduino countdown start signal")
-                            peripheral.write(characteristic, byteArrayOf(31.toByte()))
-                        } else {
-                            println("Sending Arduino countdown stop signal")
-                            peripheral.write(characteristic, byteArrayOf(30.toByte()))
-                        }
-                    }
-                }
-            }
+        OpenRZ67Theme {
+            OpenRZ67App()
         }
     }
 
@@ -469,11 +333,34 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun backoff(
-        base: Long,
-        multiplier: Float,
-        retry: Int,
-    ): Long = (base * multiplier.pow(retry - 1)).toLong()
+    private fun initializeBluetooth() {
+        val bluetoothSystemManager = getSystemService(BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager
+        val bluetoothAdapter = bluetoothSystemManager.adapter
+        val takeResultLauncher = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode == RESULT_OK) {
+                Toast.makeText(applicationContext, "Bluetooth ON", Toast.LENGTH_LONG).show()
+            } else {
+                Toast.makeText(applicationContext, "Bluetooth Off", Toast.LENGTH_LONG).show()
+            }
+        }
+        val takePermission =
+            registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+                if (it) {
+                    val intent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                    takeResultLauncher.launch(intent)
+                } else {
+                    Toast.makeText(
+                        applicationContext,
+                        "Bluetooth Permission is not Granted",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+
+        takePermission.launch(Manifest.permission.BLUETOOTH_CONNECT)
+    }
 
     private fun startCountdownTimer() {
         countdownJob?.cancel()
@@ -492,6 +379,13 @@ class MainActivity : ComponentActivity() {
     private fun stopCountdownTimer() {
         countdownJob?.cancel()
         countdownTimeLeft = 0
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (::bluetoothManager.isInitialized) {
+            bluetoothManager.cleanup()
+        }
     }
 
 }

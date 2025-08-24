@@ -15,11 +15,11 @@ android {
             }
         }
     }
-    namespace 'dev.hellevang.androidblaarz67'
+    namespace 'dev.hellevang.openrz67'
     compileSdk 34
 
     defaultConfig {
-        applicationId "dev.hellevang.androidblaarz67"
+        applicationId "dev.hellevang.openrz67"
         minSdk 31
         targetSdk 34
         versionCode 1

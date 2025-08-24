@@ -13,5 +13,5 @@ dependencyResolutionManagement {
         maven { url 'https://jitpack.io' }
     }
 }
-rootProject.name = "Android Blaa RZ67"
+rootProject.name = "openrz67"
 include ':app'

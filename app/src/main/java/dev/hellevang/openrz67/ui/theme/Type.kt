@@ -1,4 +1,4 @@
-package dev.hellevang.androidblaarz67.ui.theme
+package dev.hellevang.openrz67.ui.theme
 
 import androidx.compose.material.Typography
 import androidx.compose.ui.text.TextStyle
